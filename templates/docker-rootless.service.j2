@@ -4,17 +4,14 @@ Documentation=https://docs.docker.com/go/rootless/
 Requires=dbus.socket
 
 [Service]
-Environment=PATH={{ docker_rootless_bin_dir }}:/sbin:/usr/sbin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
-{% if docker_rootless_rootlesskit_net | length > 0 %}
-Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET={{ docker_rootless_rootlesskit_net }}
+Environment=PATH=/usr/bin:/sbin:/usr/sbin:/usr/local/sbin:/usr/local/bin:/bin
+{% if docker_rootless_network_driver | length > 0 %}
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_NET={{ docker_rootless_network_driver }}"
 {% endif %}
-{% if docker_rootless_rootlesskit_port_driver | length > 0 %}
-Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER={{ docker_rootless_rootlesskit_port_driver }}
-{% endif %}
-{% for env_key, env_val in docker_rootless_rootlesskit_env.items() %}
-Environment={{ env_key }}={{ env_val }}
+{% for env_key, env_val in docker_rootless_environment.items() %}
+Environment="{{ env_key }}={{ env_val | replace('\\', '\\\\') | replace('\"', '\\\"') }}"
 {% endfor %}
-ExecStart={{ docker_rootless_bin_dir }}/dockerd-rootless.sh
+ExecStart=/usr/bin/dockerd-rootless.sh
 ExecReload=/bin/kill -s HUP $MAINPID
 TimeoutSec=0
 RestartSec=2

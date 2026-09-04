@@ -151,14 +151,10 @@ Rootless Docker allows running the Docker daemon and containers as a non-root us
 ```yaml
 docker_rootless: false
 docker_rootless_user: ""
-docker_rootless_user_create: false
-docker_rootless_user_home: ""
-docker_rootless_bin_dir: /usr/bin
-docker_rootless_subuid_count: 65536
-docker_rootless_subuid_start: ""
-docker_rootless_rootlesskit_net: ""
-docker_rootless_rootlesskit_port_driver: ""
-docker_rootless_rootlesskit_env: {}
+docker_rootless_subid_start: ""
+docker_rootless_subid_count: 65536
+docker_rootless_network_driver: ""
+docker_rootless_environment: {}
 docker_rootless_expose_privileged_ports: false
 ```
 
@@ -166,20 +162,30 @@ docker_rootless_expose_privileged_ports: false
   - The system-level `docker.service` and `docker.socket` are masked, stopped, and disabled.
   - The Docker daemon runs as a user systemd service (`systemctl --user`) under `docker_rootless_user`.
   - Systemd linger is enabled via `loginctl enable-linger` to keep the user daemon running without an active user session.
-- **`docker_rootless_user`**: The unprivileged system user account under which rootless Docker runs. Required when `docker_rootless: true`. Rootless Docker cannot run as `root` (UID 0).
-- **`docker_rootless_user_create`**: When `true`, automatically creates `docker_rootless_user` if it does not already exist. If `false`, the user must exist beforehand.
-- **`docker_rootless_user_home`**: Optional custom home directory for `docker_rootless_user` if created. Defaults to the system standard (e.g. `/home/<user>`).
-- **`docker_rootless_bin_dir`**: The directory containing Docker rootless binaries (default: `/usr/bin`).
-- **`docker_rootless_subuid_count`**: Number of subordinate UIDs and GIDs allocated in `/etc/subuid` and `/etc/subgid` (default: `65536`, minimum required by Docker). Existing allocations with `>= 65536` IDs are preserved.
-- **`docker_rootless_subuid_start`**: Optional starting ID for subordinate allocation. If omitted, the role dynamically calculates a safe, collision-free offset from current host allocations (starting from `100000`).
-- **`docker_rootless_rootlesskit_net`**: Network driver for RootlessKit (`slirp4netns`, `pasta`, `gvisor-tap-vsock`). Defaults to upstream auto-detection.
-- **`docker_rootless_rootlesskit_port_driver`**: Port driver for RootlessKit (`builtin`, `implicit`). Defaults to upstream auto-detection.
-- **`docker_rootless_rootlesskit_env`**: Key-value dictionary of environment variables passed to the rootless systemd service. For example, to expose a metrics listener to the host network namespace:
+- **`docker_rootless_user`**: The unprivileged system user account under which rootless Docker runs. Required when `docker_rootless: true`. Rootless Docker cannot run as `root` (UID 0). If the account does not exist on the target host, the role automatically creates it. If the account already exists, the role discovers its home directory, UID, and GID from the system passwd database, and reconciles that home directory's ownership (`<user>:<primary gid>`) and mode (`0750`).
+- **`docker_rootless_subid_start`**: Optional starting ID for subordinate UID and GID allocations in `/etc/subuid` and `/etc/subgid`. If omitted, the role dynamically calculates a safe, collision-free offset from current host allocations (starting from `100000`). Existing allocations with count > 0 are preserved.
+- **`docker_rootless_subid_count`**: Number of subordinate UIDs and GIDs allocated in `/etc/subuid` and `/etc/subgid` when creating a new allocation (default: `65536`). Existing allocations with count > 0 are preserved.
+- **`docker_rootless_network_driver`**: RootlessKit network driver to select (`""`, `"slirp4netns"`, `"pasta"`, or `"gvisor-tap-vsock"`). When empty (`""`, default), the role does not set `DOCKERD_ROOTLESS_ROOTLESSKIT_NET` itself, allowing Moby to use its automatic network driver selection. When an explicit driver is configured, the role sets `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=<driver>` in the systemd service unit and installs the driver's required packages (e.g. `slirp4netns` or `passt`).
+- **`docker_rootless_environment`**: Key-value dictionary of environment variables passed to the rootless systemd service unit. For example:
   ```yaml
-  docker_rootless_rootlesskit_env:
-    DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS: "--publish=127.0.0.1:9323:9323/tcp"
+  docker_rootless_environment:
+    HTTP_PROXY: "http://proxy.example.com:8080"
+    NO_PROXY: "localhost,127.0.0.1"
   ```
-- **`docker_rootless_expose_privileged_ports`**: When `true`, applies `cap_net_bind_service=ep` capability to the `rootlesskit` executable to allow publishing privileged ports (< 1024) without globally modifying sysctl `net.ipv4.ip_unprivileged_port_start`. Reconciled and removed when set to `false`.
+- **`docker_rootless_expose_privileged_ports`**: When `true`, applies `cap_net_bind_service=ep` capability to the `rootlesskit` executable to allow publishing privileged ports (< 1024) without globally modifying sysctl `net.ipv4.ip_unprivileged_port_start`. Reconciled and removed when set to `false`. Capability tooling (`libcap2-bin`, `libcap`, or `libcap-progs`) is installed only when this feature is enabled.
+
+#### Supported Platforms for Rootless Mode
+
+Rootless Docker requires `systemd` user sessions (`systemctl --user`, `loginctl enable-linger`) and Docker's rootless extras package.
+- **Supported OS Families**: `Debian` family (Debian, Ubuntu), `RedHat` family (RHEL, CentOS Stream, Fedora, Rocky Linux, AlmaLinux), and `Suse` family (openSUSE, SLES). Automated CI exercises rootless mode against `ubuntu2404`, `fedora43`, and `opensuseleap15`.
+- **Unsupported**: Alpine Linux (uses OpenRC instead of systemd) and Arch Linux (rootless extras are not packaged in official pacman repositories). On these distributions, enabling `docker_rootless: true` fails fast with an explicit error, while standard rootful mode (`docker_rootless: false`) remains fully supported.
+
+#### Prerequisites & Feature-Dependent Packaging
+
+Prerequisites are kept strictly minimal:
+- **Core packages**: Only the minimal package providing `newuidmap` and `newgidmap` (`uidmap` on Debian/Ubuntu, `shadow-utils` on RedHat, `shadow` on SUSE) is installed unconditionally for rootless mode.
+- **Networking packages**: By default (`docker_rootless_network_driver: ""`), RootlessKit uses Moby's automatic driver selection (which defaults to built-in `gvisor-tap-vsock` requiring no external packages). When an explicit network driver is set, its prerequisite package (`slirp4netns` or `passt` for `pasta`) is installed automatically.
+- **Capability packages**: Capability tooling packages (`libcap2-bin` / `libcap` / `libcap-progs`) are only installed when `docker_rootless_expose_privileged_ports: true`.
 
 #### Service Lifecycle & Handlers
 
@@ -197,10 +203,8 @@ In rootless mode, the daemon listens on a per-user UNIX domain socket:
 ```
 unix:///run/user/<uid>/docker.sock
 ```
-The role exposes the following facts for subsequent tasks, playbooks, or tools:
+The role exposes the following fact for subsequent tasks, playbooks, or tools:
 - `docker_rootless_socket`: `unix:///run/user/<uid>/docker.sock`
-- `docker_rootless_socket_path`: `/run/user/<uid>/docker.sock`
-- `docker_rootless_host`: `unix:///run/user/<uid>/docker.sock`
 
 To interact with the rootless daemon from the CLI:
 ```bash

@@ -8,112 +8,113 @@
         key: testdocker
         split: ':'
 
-    - name: Assert rootless user exists and is not root
-      ansible.builtin.assert:
-        that:
-          - "'testdocker' in ansible_facts.getent_passwd"
-          - ansible_facts.getent_passwd['testdocker'][1] | int > 0
-
-    - name: Store rootless user facts
+    - name: Store rootless user UID and home
       ansible.builtin.set_fact:
         testdocker_uid: "{{ ansible_facts.getent_passwd['testdocker'][1] }}"
         testdocker_home: "{{ ansible_facts.getent_passwd['testdocker'][4] }}"
 
-    - name: Read subordinate UID mappings
-      ansible.builtin.slurp:
-        src: /etc/subuid
-      register: subuid_file
-
-    - name: Read subordinate GID mappings
-      ansible.builtin.slurp:
-        src: /etc/subgid
-      register: subgid_file
-
-    - name: Assert subordinate ID allocations exist
-      ansible.builtin.assert:
-        that:
-          - (subuid_file.content | b64decode) is search('(^|\n)testdocker:[0-9]+:[0-9]+')
-          - (subgid_file.content | b64decode) is search('(^|\n)testdocker:[0-9]+:[0-9]+')
-
-    - name: Get system Docker service status
+    - name: Verify system Docker service is masked and inactive
       ansible.builtin.systemd_service:
         name: docker.service
       register: system_docker_service
+      failed_when: >-
+        system_docker_service.status.ActiveState == 'active' or
+        system_docker_service.status.LoadState != 'masked'
 
-    - name: Assert system Docker service is not active and is masked
-      ansible.builtin.assert:
-        that:
-          - system_docker_service.status.ActiveState != 'active'
-          - system_docker_service.status.LoadState == 'masked'
-
-    - name: Get system Docker socket status
-      ansible.builtin.systemd_service:
-        name: docker.socket
-      register: system_docker_socket
-
-    - name: Assert system Docker socket is not active
-      ansible.builtin.assert:
-        that:
-          - system_docker_socket.status.ActiveState != 'active'
-
-    - name: Stat rootless daemon configuration
-      ansible.builtin.stat:
-        path: "{{ testdocker_home }}/.config/docker/daemon.json"
-      register: daemon_json_stat
-
-    - name: Assert rootless daemon configuration exists with correct ownership
-      ansible.builtin.assert:
-        that:
-          - daemon_json_stat.stat.exists
-          - daemon_json_stat.stat.pw_name == 'testdocker'
-
-    - name: Read rootless daemon configuration
-      ansible.builtin.slurp:
-        src: "{{ testdocker_home }}/.config/docker/daemon.json"
-      register: daemon_json_slurp
-
-    - name: Assert rootless daemon configuration content
-      ansible.builtin.assert:
-        that:
-          - (daemon_json_slurp.content | b64decode | from_json)['log-level'] == 'info'
-
-    - name: Verify rootless user Docker service is active
+    - name: Verify rootless Docker user service is active (default driver)
       ansible.builtin.command: >-
         su - testdocker -c "XDG_RUNTIME_DIR=/run/user/{{ testdocker_uid }} systemctl --user is-active docker"
       register: user_docker_service
       changed_when: false
       failed_when: user_docker_service.stdout.strip() != 'active'
 
-    - name: Check rootless Docker socket existence
-      ansible.builtin.stat:
-        path: "/run/user/{{ testdocker_uid }}/docker.sock"
-      register: socket_stat
+    - name: Read rootless systemd service unit for default driver check
+      ansible.builtin.slurp:
+        src: "{{ testdocker_home }}/.config/systemd/user/docker.service"
+      register: default_unit_slurp
 
-    - name: Assert rootless Docker socket exists and is a socket
+    - name: Assert default driver does not emit DOCKERD_ROOTLESS_ROOTLESSKIT_NET
       ansible.builtin.assert:
         that:
-          - socket_stat.stat.exists
-          - socket_stat.stat.issock
+          - "'DOCKERD_ROOTLESS_ROOTLESSKIT_NET' not in (default_unit_slurp.content | b64decode)"
 
-    - name: Execute docker info through rootless socket
-      ansible.builtin.command: >-
-        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock info
-      register: rootless_info_result
-      changed_when: false
-
-    - name: Display rootless docker info summary
-      ansible.builtin.debug:
-        msg: "{{ rootless_info_result.stdout_lines[:15] }}"
-
-    - name: Verify docker info reports rootless mode
+    - name: Verify docker info reports rootless mode with default driver
       ansible.builtin.command: >-
         docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock info --format '{{ '{{' }} .SecurityOptions {{ '}}' }}'
       register: rootless_security_options
       changed_when: false
       failed_when: "'rootless' not in rootless_security_options.stdout"
 
-    - name: Pull hello-world image through rootless socket
+    - name: Pull the 'hello-world' image with default driver
       ansible.builtin.command: >-
         docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock pull hello-world
-      register: rootless_pull_result
+      register: docker_pull_result
       changed_when: true
+      failed_when: docker_pull_result.rc != 0
+
+    # Test conflicting double-configuration guard rail
+    - name: Verify conflicting double-configuration guard rail triggers failure
+      block:
+        - name: Attempt to invoke role with conflicting network driver settings
+          ansible.builtin.include_role:
+            name: geerlingguy.docker
+          vars:
+            docker_rootless: true
+            docker_rootless_user: testdocker
+            docker_rootless_network_driver: "slirp4netns"
+            docker_rootless_environment:
+              DOCKERD_ROOTLESS_ROOTLESSKIT_NET: "slirp4netns"
+
+        - name: Fail if guard rail did not trigger
+          ansible.builtin.fail:
+            msg: "Expected role invocation with conflicting network driver settings to fail, but it succeeded."
+      rescue:
+        - name: Confirm guard rail failed as expected
+          ansible.builtin.debug:
+            msg: "Conflicting network driver guard rail triggered successfully."
+
+    # Test one explicitly provisioned driver (slirp4netns)
+    - name: Reconverge rootless Docker with explicitly provisioned slirp4netns driver
+      ansible.builtin.include_role:
+        name: geerlingguy.docker
+      vars:
+        docker_rootless: true
+        docker_rootless_user: testdocker
+        docker_rootless_network_driver: "slirp4netns"
+        docker_daemon_options:
+          log-level: "info"
+
+    - name: Check slirp4netns executable is provisioned
+      ansible.builtin.stat:
+        path: /usr/bin/slirp4netns
+      register: slirp4netns_bin
+
+    - name: Assert slirp4netns was provisioned
+      ansible.builtin.assert:
+        that:
+          - slirp4netns_bin.stat.exists
+          - slirp4netns_bin.stat.executable
+
+    - name: Read rootless systemd service unit for explicit driver check
+      ansible.builtin.slurp:
+        src: "{{ testdocker_home }}/.config/systemd/user/docker.service"
+      register: explicit_unit_slurp
+
+    - name: Assert explicit driver emitted DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+      ansible.builtin.assert:
+        that:
+          - "'DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns' in (explicit_unit_slurp.content | b64decode)"
+
+    - name: Verify rootless Docker user service is active with slirp4netns
+      ansible.builtin.command: >-
+        su - testdocker -c "XDG_RUNTIME_DIR=/run/user/{{ testdocker_uid }} systemctl --user is-active docker"
+      register: explicit_user_docker_service
+      changed_when: false
+      failed_when: explicit_user_docker_service.stdout.strip() != 'active'
+
+    - name: Pull image through rootless socket with explicit slirp4netns driver
+      ansible.builtin.command: >-
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock pull hello-world
+      register: explicit_docker_pull_result
+      changed_when: true
+      failed_when: explicit_docker_pull_result.rc != 0

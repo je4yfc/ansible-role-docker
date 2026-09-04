@@ -44,7 +44,15 @@ docker_zypper_repo_url: >-
 docker_add_repo: true
 
 docker_rootless_prerequisite_packages:
+  - docker-rootless-extras
   - shadow
-  - iptables
-  - slirp4netns
+
+docker_rootless_capability_packages:
   - libcap-progs
+
+docker_rootless_network_packages:
+  slirp4netns:
+    - slirp4netns
+  pasta:
+    - passt
+  gvisor-tap-vsock: []

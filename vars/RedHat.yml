@@ -15,6 +15,13 @@ docker_obsolete_packages:
 
 docker_rootless_prerequisite_packages:
   - shadow-utils
-  - iptables
-  - slirp4netns
+
+docker_rootless_capability_packages:
   - libcap
+
+docker_rootless_network_packages:
+  slirp4netns:
+    - slirp4netns
+  pasta:
+    - passt
+  gvisor-tap-vsock: []

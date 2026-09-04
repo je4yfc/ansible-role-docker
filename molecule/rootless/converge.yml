@@ -26,6 +26,5 @@
       vars:
         docker_rootless: true
         docker_rootless_user: testdocker
-        docker_rootless_user_create: true
         docker_daemon_options:
           log-level: "info"

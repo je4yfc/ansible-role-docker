@@ -68,12 +68,8 @@ docker_daemon_options: {}
 # Rootless Docker options.
 docker_rootless: false
 docker_rootless_user: ""
-docker_rootless_user_create: false
-docker_rootless_user_home: ""
-docker_rootless_bin_dir: /usr/bin
-docker_rootless_subuid_count: 65536
-docker_rootless_subuid_start: ""
-docker_rootless_rootlesskit_net: ""
-docker_rootless_rootlesskit_port_driver: ""
-docker_rootless_rootlesskit_env: {}
+docker_rootless_subid_start: ""
+docker_rootless_subid_count: 65536
+docker_rootless_network_driver: ""
+docker_rootless_environment: {}
 docker_rootless_expose_privileged_ports: false
