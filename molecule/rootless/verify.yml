@@ -1,0 +1,119 @@
+---
+- name: Verify Rootless Docker Role
+  hosts: all
+  tasks:
+    - name: Retrieve rootless daemon user information
+      ansible.builtin.getent:
+        database: passwd
+        key: testdocker
+        split: ':'
+
+    - name: Assert rootless user exists and is not root
+      ansible.builtin.assert:
+        that:
+          - "'testdocker' in ansible_facts.getent_passwd"
+          - ansible_facts.getent_passwd['testdocker'][1] | int > 0
+
+    - name: Store rootless user facts
+      ansible.builtin.set_fact:
+        testdocker_uid: "{{ ansible_facts.getent_passwd['testdocker'][1] }}"
+        testdocker_home: "{{ ansible_facts.getent_passwd['testdocker'][4] }}"
+
+    - name: Read subordinate UID mappings
+      ansible.builtin.slurp:
+        src: /etc/subuid
+      register: subuid_file
+
+    - name: Read subordinate GID mappings
+      ansible.builtin.slurp:
+        src: /etc/subgid
+      register: subgid_file
+
+    - name: Assert subordinate ID allocations exist
+      ansible.builtin.assert:
+        that:
+          - (subuid_file.content | b64decode) is search('(^|\n)testdocker:[0-9]+:[0-9]+')
+          - (subgid_file.content | b64decode) is search('(^|\n)testdocker:[0-9]+:[0-9]+')
+
+    - name: Get system Docker service status
+      ansible.builtin.systemd_service:
+        name: docker.service
+      register: system_docker_service
+
+    - name: Assert system Docker service is not active and is masked
+      ansible.builtin.assert:
+        that:
+          - system_docker_service.status.ActiveState != 'active'
+          - system_docker_service.status.LoadState == 'masked'
+
+    - name: Get system Docker socket status
+      ansible.builtin.systemd_service:
+        name: docker.socket
+      register: system_docker_socket
+
+    - name: Assert system Docker socket is not active
+      ansible.builtin.assert:
+        that:
+          - system_docker_socket.status.ActiveState != 'active'
+
+    - name: Stat rootless daemon configuration
+      ansible.builtin.stat:
+        path: "{{ testdocker_home }}/.config/docker/daemon.json"
+      register: daemon_json_stat
+
+    - name: Assert rootless daemon configuration exists with correct ownership
+      ansible.builtin.assert:
+        that:
+          - daemon_json_stat.stat.exists
+          - daemon_json_stat.stat.pw_name == 'testdocker'
+
+    - name: Read rootless daemon configuration
+      ansible.builtin.slurp:
+        src: "{{ testdocker_home }}/.config/docker/daemon.json"
+      register: daemon_json_slurp
+
+    - name: Assert rootless daemon configuration content
+      ansible.builtin.assert:
+        that:
+          - (daemon_json_slurp.content | b64decode | from_json)['log-level'] == 'info'
+
+    - name: Verify rootless user Docker service is active
+      ansible.builtin.command: >-
+        su - testdocker -c "XDG_RUNTIME_DIR=/run/user/{{ testdocker_uid }} systemctl --user is-active docker"
+      register: user_docker_service
+      changed_when: false
+      failed_when: user_docker_service.stdout.strip() != 'active'
+
+    - name: Check rootless Docker socket existence
+      ansible.builtin.stat:
+        path: "/run/user/{{ testdocker_uid }}/docker.sock"
+      register: socket_stat
+
+    - name: Assert rootless Docker socket exists and is a socket
+      ansible.builtin.assert:
+        that:
+          - socket_stat.stat.exists
+          - socket_stat.stat.issock
+
+    - name: Execute docker info through rootless socket
+      ansible.builtin.command: >-
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock info
+      register: rootless_info_result
+      changed_when: false
+
+    - name: Display rootless docker info summary
+      ansible.builtin.debug:
+        msg: "{{ rootless_info_result.stdout_lines[:15] }}"
+
+    - name: Verify docker info reports rootless mode
+      ansible.builtin.command: >-
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock info --format '{{ '{{' }} .SecurityOptions {{ '}}' }}'
+      register: rootless_security_options
+      changed_when: false
+      failed_when: "'rootless' not in rootless_security_options.stdout"
+
+    - name: Pull hello-world image through rootless socket
+      ansible.builtin.command: >-
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock pull hello-world
+      register: rootless_pull_result
+      changed_when: true

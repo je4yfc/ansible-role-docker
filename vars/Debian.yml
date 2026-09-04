@@ -12,3 +12,10 @@ docker_obsolete_packages:
   - podman-docker
   - containerd
   - runc
+
+docker_rootless_prerequisite_packages:
+  - uidmap
+  - dbus-user-session
+  - iptables
+  - slirp4netns
+  - libcap2-bin

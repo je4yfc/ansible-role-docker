@@ -12,3 +12,9 @@ docker_obsolete_packages:
   - docker-latest-logrotate
   - docker-logrotate
   - docker-engine
+
+docker_rootless_prerequisite_packages:
+  - shadow-utils
+  - iptables
+  - slirp4netns
+  - libcap

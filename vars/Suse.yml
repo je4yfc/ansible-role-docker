@@ -42,3 +42,9 @@ docker_zypper_repo_url: >-
 
 # Control whether to add the Docker repository
 docker_add_repo: true
+
+docker_rootless_prerequisite_packages:
+  - shadow
+  - iptables
+  - slirp4netns
+  - libcap-progs

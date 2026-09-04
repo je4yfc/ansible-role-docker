@@ -135,13 +135,81 @@ docker_users:
 docker_daemon_options: {}
 ```
 
-Custom `dockerd` options can be configured through this dictionary representing the json file `/etc/docker/daemon.json`. Example:
+Custom `dockerd` options can be configured through this dictionary representing the json file `/etc/docker/daemon.json` (or `~/.config/docker/daemon.json` when running in rootless mode). Example:
 
 ```yaml
 docker_daemon_options:
   storage-driver: "overlay2"
   log-opts:
     max-size: "100m"
+```
+
+### Rootless Docker Mode
+
+Rootless Docker allows running the Docker daemon and containers as a non-root user to mitigate potential container breakout vulnerabilities. This role provides native, opt-in support for rootless mode.
+
+```yaml
+docker_rootless: false
+docker_rootless_user: ""
+docker_rootless_user_create: false
+docker_rootless_user_home: ""
+docker_rootless_bin_dir: /usr/bin
+docker_rootless_subuid_count: 65536
+docker_rootless_subuid_start: ""
+docker_rootless_rootlesskit_net: ""
+docker_rootless_rootlesskit_port_driver: ""
+docker_rootless_rootlesskit_env: {}
+docker_rootless_expose_privileged_ports: false
+```
+
+- **`docker_rootless`**: Controls whether to configure Docker in rootless mode. Default is `false` (existing rootful behavior). When `true`:
+  - The system-level `docker.service` and `docker.socket` are masked, stopped, and disabled.
+  - The Docker daemon runs as a user systemd service (`systemctl --user`) under `docker_rootless_user`.
+  - Systemd linger is enabled via `loginctl enable-linger` to keep the user daemon running without an active user session.
+- **`docker_rootless_user`**: The unprivileged system user account under which rootless Docker runs. Required when `docker_rootless: true`. Rootless Docker cannot run as `root` (UID 0).
+- **`docker_rootless_user_create`**: When `true`, automatically creates `docker_rootless_user` if it does not already exist. If `false`, the user must exist beforehand.
+- **`docker_rootless_user_home`**: Optional custom home directory for `docker_rootless_user` if created. Defaults to the system standard (e.g. `/home/<user>`).
+- **`docker_rootless_bin_dir`**: The directory containing Docker rootless binaries (default: `/usr/bin`).
+- **`docker_rootless_subuid_count`**: Number of subordinate UIDs and GIDs allocated in `/etc/subuid` and `/etc/subgid` (default: `65536`, minimum required by Docker). Existing allocations with `>= 65536` IDs are preserved.
+- **`docker_rootless_subuid_start`**: Optional starting ID for subordinate allocation. If omitted, the role dynamically calculates a safe, collision-free offset from current host allocations (starting from `100000`).
+- **`docker_rootless_rootlesskit_net`**: Network driver for RootlessKit (`slirp4netns`, `pasta`, `gvisor-tap-vsock`). Defaults to upstream auto-detection.
+- **`docker_rootless_rootlesskit_port_driver`**: Port driver for RootlessKit (`builtin`, `implicit`). Defaults to upstream auto-detection.
+- **`docker_rootless_rootlesskit_env`**: Key-value dictionary of environment variables passed to the rootless systemd service. For example, to expose a metrics listener to the host network namespace:
+  ```yaml
+  docker_rootless_rootlesskit_env:
+    DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS: "--publish=127.0.0.1:9323:9323/tcp"
+  ```
+- **`docker_rootless_expose_privileged_ports`**: When `true`, applies `cap_net_bind_service=ep` capability to the `rootlesskit` executable to allow publishing privileged ports (< 1024) without globally modifying sysctl `net.ipv4.ip_unprivileged_port_start`. Reconciled and removed when set to `false`.
+
+#### Service Lifecycle & Handlers
+
+In rootless mode:
+- The daemon service is controlled via the existing `docker_service_manage`, `docker_service_state`, and `docker_service_enabled` variables, targeting the user-level systemd service `~/.config/systemd/user/docker.service`.
+- The `restart docker` handler automatically directs restarts to the user systemd service when `docker_rootless: true` and to the system daemon when `docker_rootless: false`.
+
+#### Daemon Configuration
+
+When `docker_rootless: true`, daemon options configured via `docker_daemon_options` are rendered into the user's configuration file at `~/.config/docker/daemon.json` (owned by `docker_rootless_user`) rather than the rootful `/etc/docker/daemon.json`.
+
+#### Socket Contract and Usage
+
+In rootless mode, the daemon listens on a per-user UNIX domain socket:
+```
+unix:///run/user/<uid>/docker.sock
+```
+The role exposes the following facts for subsequent tasks, playbooks, or tools:
+- `docker_rootless_socket`: `unix:///run/user/<uid>/docker.sock`
+- `docker_rootless_socket_path`: `/run/user/<uid>/docker.sock`
+- `docker_rootless_host`: `unix:///run/user/<uid>/docker.sock`
+
+To interact with the rootless daemon from the CLI:
+```bash
+export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+docker info
+```
+Or specify the host flag:
+```bash
+docker -H unix:///run/user/<uid>/docker.sock info
 ```
 
 ## Use with Ansible (and `docker` Python library)
