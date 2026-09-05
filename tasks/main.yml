@@ -21,6 +21,17 @@
       with init system '{{ ansible_facts.service_mgr }}' is not supported for rootless mode.
   when: docker_rootless | bool
 
+- name: Ensure system Docker service and socket are unmasked.
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: false
+  loop:
+    - docker.service
+    - docker.socket
+  when:
+    - not (docker_rootless | bool)
+    - ansible_facts.service_mgr == 'systemd'
+
 - include_tasks: setup-RedHat.yml
   when: ansible_facts.os_family == 'RedHat'
 

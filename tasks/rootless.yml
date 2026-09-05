@@ -37,7 +37,7 @@
   ansible.builtin.getent:
     database: passwd
     key: "{{ docker_rootless_user }}"
-    split: ':'
+    split: ":"
     fail_key: false
 
 - name: Ensure rootless user account is present if missing.
@@ -54,7 +54,7 @@
   ansible.builtin.getent:
     database: passwd
     key: "{{ docker_rootless_user }}"
-    split: ':'
+    split: ":"
 
 - name: Validate rootless user exists and is non-root.
   ansible.builtin.assert:
@@ -157,6 +157,21 @@
     - not (docker_rootless_linger_stat.stat.exists | default(false))
   changed_when: true
 
+- name: Ensure rootless user manager is running.
+  ansible.builtin.systemd_service:
+    name: "user@{{ docker_rootless_uid }}.service"
+    state: started
+  when: ansible_facts.service_mgr == 'systemd'
+
+- name: Wait for rootless user session sockets to be ready.
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 30
+  loop:
+    - "{{ docker_rootless_runtime_dir }}/systemd/private"
+    - "{{ docker_rootless_runtime_dir }}/bus"
+  when: ansible_facts.service_mgr == 'systemd'
+
 - name: Verify RootlessKit and dockerd-rootless executables are present.
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -203,20 +218,31 @@
     - docker_rootless_capability_packages is defined
     - docker_rootless_capability_packages | length > 0
 
-- name: Check if getcap command is available.
-  ansible.builtin.command: which getcap
-  register: docker_rootless_getcap_check
+- name: Check current RootlessKit capabilities.
+  ansible.builtin.command: getcap /usr/bin/rootlesskit
+  register: docker_rootless_getcap
   changed_when: false
   failed_when: false
   check_mode: false
 
-- name: Manage RootlessKit capability for privileged host ports.
+- name: Add RootlessKit capability for privileged host ports.
   community.general.capabilities:
     path: /usr/bin/rootlesskit
     capability: cap_net_bind_service=ep
-    state: "{{ 'present' if (docker_rootless_expose_privileged_ports | bool) else 'absent' }}"
+    state: present
   when:
-    - docker_rootless_expose_privileged_ports | bool or docker_rootless_getcap_check.rc == 0
+    - docker_rootless_expose_privileged_ports | bool
+    - "'cap_net_bind_service' not in docker_rootless_getcap.stdout"
+  notify: restart docker
+
+- name: Remove RootlessKit capability when privileged ports are disabled.
+  community.general.capabilities:
+    path: /usr/bin/rootlesskit
+    capability: cap_net_bind_service=ep
+    state: absent
+  when:
+    - not (docker_rootless_expose_privileged_ports | bool)
+    - "'cap_net_bind_service' in docker_rootless_getcap.stdout"
   notify: restart docker
 
 - name: Ensure rootless user config directory exists.

@@ -21,6 +21,26 @@
       changed_when: false
       failed_when: systemctl_status.rc > 1
 
+    - name: Ensure container system services are active for rootless testing.
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - dbus.socket
+        - systemd-user-sessions.service
+        - systemd-logind.service
+      when: ansible_facts.service_mgr == 'systemd'
+
+    - name: Ensure container permissions for rootless testing.
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /usr/bin/newuidmap, mode: "4755"}
+        - {path: /usr/bin/newgidmap, mode: "4755"}
+        - {path: /etc/shadow, mode: "0644"}
+      failed_when: false
+
   roles:
     - role: geerlingguy.docker
       vars:

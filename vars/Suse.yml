@@ -46,6 +46,8 @@ docker_add_repo: true
 docker_rootless_prerequisite_packages:
   - docker-rootless-extras
   - shadow
+  - iproute2
+  - procps
 
 docker_rootless_capability_packages:
   - libcap-progs

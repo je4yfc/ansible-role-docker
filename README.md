@@ -6,7 +6,7 @@ An Ansible Role that installs [Docker](https://www.docker.com) on Linux.
 
 ## Requirements
 
-None.
+The `community.general` collection is required when using rootless Docker support.
 
 ## Role Variables
 
