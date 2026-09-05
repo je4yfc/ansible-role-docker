@@ -83,6 +83,10 @@
         docker_rootless_network_driver: "slirp4netns"
         docker_daemon_options:
           log-level: "info"
+          storage-driver: "vfs"
+          exec-opts:
+            - "native.cgroupdriver=cgroupfs"
+        docker_install_cadvisor: true
 
     - name: Check slirp4netns executable is provisioned
       ansible.builtin.stat:
@@ -112,9 +116,59 @@
       changed_when: false
       failed_when: explicit_user_docker_service.stdout.strip() != 'active'
 
-    - name: Pull image through rootless socket with explicit slirp4netns driver
+    - name: Run test container through rootless socket
       ansible.builtin.command: >-
-        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock pull hello-world
-      register: explicit_docker_pull_result
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock run -d --name cadvisor-rootless-test busybox sleep 300
+      register: explicit_docker_run_result
       changed_when: true
-      failed_when: explicit_docker_pull_result.rc != 0
+      failed_when: explicit_docker_run_result.rc != 0
+
+    - name: Verify cAdvisor systemd service is active and enabled in rootless mode
+      ansible.builtin.systemd_service:
+        name: cadvisor.service
+      register: cadvisor_rootless_service_status
+      failed_when: >-
+        cadvisor_rootless_service_status.status.ActiveState != 'active' or
+        cadvisor_rootless_service_status.status.UnitFileState != 'enabled'
+
+    - name: Read cAdvisor systemd service unit file
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/cadvisor.service
+      register: cadvisor_unit_slurp
+
+    - name: Assert cAdvisor is configured with rootless Docker and containerd sockets
+      ansible.builtin.assert:
+        that:
+          - "('-docker=unix:///run/user/' ~ testdocker_uid ~ '/docker.sock') in (cadvisor_unit_slurp.content | b64decode)"
+          - "('-containerd=/run/user/' ~ testdocker_uid ~ '/docker/containerd/containerd.sock') in (cadvisor_unit_slurp.content | b64decode)"
+
+    - name: Query cAdvisor Prometheus metrics endpoint in rootless mode
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/metrics"
+        return_content: true
+        status_code: 200
+      register: cadvisor_metrics_rootless
+      until: "'name=\"cadvisor-rootless-test\"' in cadvisor_metrics_rootless.content"
+      retries: 15
+      delay: 2
+
+    - name: Assert cAdvisor metrics response contains version and container metrics in rootless mode
+      ansible.builtin.assert:
+        that:
+          - "'cadvisor_version_info' in cadvisor_metrics_rootless.content"
+          - "'cadvisorVersion=' in cadvisor_metrics_rootless.content"
+          - "'name=\"cadvisor-rootless-test\"' in cadvisor_metrics_rootless.content"
+
+    - name: Clean up rootless test container
+      ansible.builtin.command: >-
+        docker -H unix:///run/user/{{ testdocker_uid }}/docker.sock rm -f cadvisor-rootless-test
+      changed_when: true
+      failed_when: false
+
+    - name: Verify system Docker service remains masked and inactive after cAdvisor deployment
+      ansible.builtin.systemd_service:
+        name: docker.service
+      register: system_docker_service_final
+      failed_when: >-
+        system_docker_service_final.status.ActiveState == 'active' or
+        system_docker_service_final.status.LoadState != 'masked'

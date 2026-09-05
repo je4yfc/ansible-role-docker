@@ -48,3 +48,7 @@
         docker_rootless_user: testdocker
         docker_daemon_options:
           log-level: "info"
+          storage-driver: "vfs"
+          exec-opts:
+            - "native.cgroupdriver=cgroupfs"
+        docker_install_cadvisor: true

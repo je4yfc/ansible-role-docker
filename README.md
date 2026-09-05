@@ -216,7 +216,58 @@ Or specify the host flag:
 docker -H unix:///run/user/<uid>/docker.sock info
 ```
 
+### cAdvisor Support
+
+[cAdvisor](https://github.com/google/cadvisor) (Container Advisor) provides container users an understanding of the resource usage and performance characteristics of their running containers. This role optionally installs cAdvisor as a native, root-owned `systemd` system service from official upstream static release binaries with checksum verification.
+
+cAdvisor is compatible with both standard rootful Docker and rootless Docker deployments.
+
+```yaml
+# cAdvisor options service options.
+docker_install_cadvisor: false
+docker_cadvisor_service_manage: true
+docker_cadvisor_state: started
+docker_cadvisor_service_enabled: true
+docker_cadvisor_restart_handler_state: restarted
+docker_cadvisor_listen_ip: "127.0.0.1"
+docker_cadvisor_port: 8080
+docker_cadvisor_extra_args: []
+
+# cAdvisor Package Options
+docker_cadvisor_version: "latest"
+docker_cadvisor_arch: "{{ 'amd64' if ansible_facts.architecture in ['x86_64', 'amd64'] else 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else ansible_facts.architecture }}"
+```
+
+- **`docker_install_cadvisor`**: Enables installation and service management for cAdvisor. Default is `false`.
+- **`docker_cadvisor_service_manage`**: Whether to manage the cAdvisor systemd service. Default is `true`.
+- **`docker_cadvisor_state`**: Desired state of the systemd service (`started`, `stopped`). Default is `started`.
+- **`docker_cadvisor_service_enabled`**: Whether cAdvisor should be enabled at boot (default: `true`).
+- **`docker_cadvisor_restart_handler_state`**: State for the cAdvisor restart handler (`restarted`).
+- **`docker_cadvisor_listen_ip`**: IP address to bind the web server and Prometheus metrics endpoint. Default is `127.0.0.1`.
+- **`docker_cadvisor_port`**: Port on which cAdvisor listens (default: `8080`).
+- **`docker_cadvisor_extra_args`**: List of additional command-line flags passed directly to the cAdvisor executable (e.g. `["-docker_only=true"]`).
+- **`docker_cadvisor_version`**: Upstream cAdvisor release tag (e.g. `v0.60.5`) or `latest` (default: `latest`).
+- **`docker_cadvisor_arch`**: Architecture identifier for binary downloads (`amd64` or `arm64`).
+
+
+#### Service Lifecycle & Handlers
+
+cAdvisor is managed as a native root-owned system systemd service (`/etc/systemd/system/cadvisor.service`), regardless of whether Docker is running in rootful or rootless mode.
+
+- The `restart cadvisor` handler independently handles cAdvisor restarts when its binary or unit template is updated, without restarting or interrupting the Docker daemon.
+- cAdvisor is ordered after the respective Docker service (`docker.service` in rootful mode, or `user@<uid>.service` in rootless mode) and enforces an `ExecStartPre` Docker API readiness probe (`docker info`) against the effective socket. This prevents cAdvisor from permanently missing container runtime registration if it starts before dockerd is ready. In rootless mode, it connects to the unprivileged user's Docker and containerd sockets while leaving system Docker masked and inactive.
+
+#### Exposed Metrics Contract
+
+Upon completion of the cAdvisor tasks, the role exposes the following facts:
+- `docker_cadvisor_effective_listen_ip`: Effective IP address (e.g. `127.0.0.1`).
+- `docker_cadvisor_effective_port`: Effective port (e.g. `8080`).
+- `docker_cadvisor_effective_metrics_path`: Metrics path (e.g. `/metrics`).
+- `docker_cadvisor_effective_metrics_url`: Full metrics URL (e.g. `http://127.0.0.1:8080/metrics`).
+- `docker_cadvisor_effective_docker_endpoint`: Effective Docker socket URL.
+
 ## Use with Ansible (and `docker` Python library)
+
 
 Many users of this role wish to also use Ansible to then _build_ Docker images and manage Docker containers on the server where Docker is installed. In this case, you can easily add in the `docker` Python library using the `geerlingguy.pip` role:
 

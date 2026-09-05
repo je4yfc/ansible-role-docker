@@ -159,3 +159,7 @@
   when:
     - not (docker_rootless | bool)
     - at_least_one_user_to_modify is defined
+
+- name: Install and configure cAdvisor.
+  ansible.builtin.include_tasks: cadvisor.yml
+  when: docker_install_cadvisor | bool
